@@ -1,0 +1,306 @@
+---
+title: "Excercise prediction"
+author: "Rok Bohinc"
+date: "July 15, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+## Abstract
+In this project, I will use data from accelerometers on the belt, forearm, arm, and dumbell from 6 participants to predict the manner in which they performed barbell lifts. The participants performed the exercise correctly and incorrectly in 5 different ways: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+
+The information is stored in the "classe" variable of the training set. More information on the project can be found on: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.
+
+Objectives:
+
+* You should create a report describing how you 
+      + built your model
+      + how you used cross validation
+      + what you think the expected out of sample error is
+      + and why you made the choices you did.
+* You will also use your prediction model to predict 20 different test cases. You may use any of the other variables to predict with. 
+
+
+Below I have a code which downloads, reads, and preprocesses the data. I then train my model and estimate the in sample and out of sample error rates. Finally I predict the classe of the weight lifting excercises for the 20 test cases.
+
+## Downloading and reading data
+
+```{r}
+setwd("/home/rok/Edjucation/2019.3.28. Data_Science-Specialization/Practical Machine Learning/ExcercisePrediction")
+if (!file.exists("data")){dir.create("data")}
+
+trainURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# download data
+download.file(trainURL, destfile = "./data/train.csv", method = "curl")
+download.file(testURL, destfile = "./data/test.csv", method = "curl")
+```
+
+```{r}
+# read data
+trainInit = read.csv("./data/train.csv", na.strings = "")
+testInit = read.csv("./data/test.csv", na.strings = "")
+```
+
+## Preprocesing
+
+### Partitioning
+
+```{r}
+cbind(train=dim(trainInit),test=dim(testInit))
+```
+
+I have a huge amount of data in the training set and almost no data in the test set. By using this test set the out of sample error will have high variance and will not be realiable. Since I have l lot of data I will re-partition the train set according the magic formula 60% training, 20% test and 20% validation.
+
+
+```{r message=FALSE}
+library(caret);
+inTrain <- createDataPartition(y=trainInit$classe, p=0.6, list=FALSE) 
+train <- trainInit[inTrain,]
+temptest <- trainInit[-inTrain,]
+inTest <- createDataPartition(y=temptest$classe, p=0.5, list=FALSE)
+test <- temptest[inTest,]
+validation <- temptest[-inTest,]
+```
+
+The partition can be seen in the table below:
+```{r}
+cbind(train=dim(train),test=dim(test),validation=dim(validation))
+```
+
+
+### Converting factor variables to numeric
+
+```{r eval=FALSE}
+str(train)
+```
+We see that there is (`r sum(sapply(train, is.factor))` factor variables in total, some of which are actually numeric by nature but because they have few entries of "#DIV/0!" they are interpreted as factor variables. By looking at the number of levels I see that fake factor variables with more than 6 levels are actually numeric variables. I make a partition of each of the data sets as follows:
+
+* I first separate factor from non-factor variables
+* Then I separate true and fake factor variables
+
+```{r}
+### Partition for the Train set ###
+factorTrain <- train[,sapply(train, is.factor)]
+elseTrain <- train[,!sapply(train, is.factor)]
+fakefactorTrain <- factorTrain[,sapply(sapply(as.list(factorTrain), levels),length) > 6]
+truefactorTrain <- factorTrain[,sapply(sapply(as.list(factorTrain), levels),length) <= 6]
+```
+
+I do the same procedure for the test, validation, the initial test set. This is done throught the document. The code is however hidden to increase readibility. 
+
+```{r include=FALSE}
+### Partition for the Test set ###
+factorTest <- test[,sapply(train, is.factor)]
+elseTest <- test[,!sapply(train, is.factor)]
+fakefactorTest <- factorTest[,sapply(sapply(as.list(factorTrain), levels),length) > 6]
+truefactorTest <- factorTest[,sapply(sapply(as.list(factorTrain), levels),length) <= 6]
+
+### Partition for the Validation set ###
+factorVal <- validation[,sapply(train, is.factor)]
+elseVal <- validation[,!sapply(train, is.factor)]
+fakefactorVal <- factorVal[,sapply(sapply(as.list(factorTrain), levels),length) > 6]
+truefactorVal <- factorVal[,sapply(sapply(as.list(factorTrain), levels),length) <= 6]
+
+### Partition for the testInit set ###
+factortestInit <- testInit[,sapply(train, is.factor)]
+elsetestInit <- testInit[,!sapply(train, is.factor)]
+fakefactortestInit <- factortestInit[,sapply(sapply(as.list(factorTrain), levels),length) > 6]
+truefactortestInit <- factortestInit[,sapply(sapply(as.list(factorTrain), levels),length) <= 6]
+```
+
+
+Now I convert fake factor variables to numeric. With the conversion I convert #DIV/0! to NA, which is acceptable since there is not a lot of such values.
+```{r message=FALSE, warning=FALSE}
+# Convestion to of the Train set ##
+library(lubridate)
+Trainff <- sapply(fakefactorTrain, function(f) as.numeric(as.character(f)))
+nearZeroVar(truefactorTrain, saveMetrics = TRUE)
+removeTrain <- -nearZeroVar(truefactorTrain, freqCut = 3.5) 
+Traintf <- truefactorTrain[,removeTrain] 
+Train <- cbind(Trainff,Traintf,elseTrain)
+Train$cvtd_timestamp <- dmy_hm(train$cvtd_timestamp)
+```
+I see that most of true factor variables are near zero variables, so I have removed them. With setting freqCut to 3.5 have increased the cutoff value for discarding near zero values (I also want to get rid of amplitude_yaw_forearm, as it also has minor variability).
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Convestion to of the Test set ##
+Testff <- sapply(fakefactorTest, function(f) as.numeric(as.character(f)))
+Testtf <- truefactorTest[,removeTrain]
+Test <- cbind(Testff,Testtf,elseTest)
+Test$cvtd_timestamp <- dmy_hm(test$cvtd_timestamp)
+
+# Convestion to of the Validation set ##
+Valff <- sapply(fakefactorVal, function(f) as.numeric(as.character(f)))
+Valtf <- truefactorVal[,removeTrain]
+Val <- cbind(Valff,Valtf,elseVal)
+Val$cvtd_timestamp <- dmy_hm(Val$cvtd_timestamp)
+
+# Convestion to of the testinit set ##
+testInitff <- sapply(fakefactortestInit, function(f) as.numeric(as.character(f)))
+testInittf <- truefactortestInit[,removeTrain]
+testCheck <- cbind(testInitff,testInittf,elsetestInit)
+testCheck$cvtd_timestamp <- dmy_hm(testCheck$cvtd_timestamp)
+```
+
+
+### Selecting variables for prediction (the missing value problem)
+
+A large portion, of all variables have the majority values missing (see histogram).
+
+```{r message=FALSE, fig.cap="Histograms of of percentage of NAs for variables in Train. The red line represents the cutoff value for dropping variables"}
+library(VIM)
+Cut <- 0.95
+hist(sapply(lapply(Train, is.na),sum)/dim(Train)[1], breaks = 50, xlab = "Percentage of missing variables", main = "Histogram of percentage of NAs for variables in Train")
+abline(v=Cut,lty=2,lwd=2, col="red")
+```
+
+
+```{r, fig.cap="Display of missing values for variables with more than 95 % missing values. Red indicates NAs, blue represents non-NAs. In the right plot we see the frequency  of cases for different patterns of missin values among the variables. The most important is the number bellow, i.e. 11531, which coresponds to the nuber of times all variables have missing values."}
+VNAs <- round(sapply(lapply(Train, is.na),sum)/dim(Train)[1],2)>Cut
+aggr(Train[,VNAs], numbers = TRUE, prop = c(TRUE, FALSE))
+```
+
+From the aggr plot we see that there are 11531 cases  (about 98%) for which all variables with a high percentage of missing values are actually missing. In other word the missing values occur all at the same place in the data set. To save computation time, I discard variables with percentage of missing values higher than `r Cut` % such. There is `r sum(VNAs)` variables, which is more than a half of all variables. The remaining sets do not have missing values any more.
+
+```{r}
+TRAIN <- Train[,!VNAs]
+```
+
+```{r include=FALSE}
+TEST <- Test[,!VNAs]
+VAL <- Val[,!VNAs]
+TESTCheck <- testCheck[,!VNAs]
+```
+
+
+Furthermore I don't want the prediction to depend on the name of the user nor at what time he performs the exercise, as this has nothing to do with the execution of the exercise. I therefore remove variables: "cvtd_timestamp", "user_name", "X", "raw_timestamp_part_1", "raw_timestamp_part_2"
+
+
+```{r message=FALSE}
+library(dplyr)
+rem <- c("cvtd_timestamp", "user_name", "X", "raw_timestamp_part_1", "raw_timestamp_part_2")
+TRAIN <- select(TRAIN, -rem)
+```
+
+```{r include=FALSE}
+TEST <- select(TEST, -rem)
+VAL <- select(VAL, -rem)
+TESTCheck <- select(TESTCheck, -rem)
+```
+
+### Principal component analysis
+
+As the amount of variables is still large (`r dim(TRAIN)[2]` variables) I will implement PCA to reduce the dimensionality and speed up computation. I choose to take variables that catch 90 % of the variability.
+
+```{r}
+preProc <- preProcess(TRAIN,method="pca", thresh = 0.90)
+trainPC <- predict(preProc,TRAIN)
+```
+
+```{r include=FALSE}
+testPC <- predict(preProc,TEST)
+valPC <- predict(preProc,VAL)
+TESTCheckPC <- predict(preProc,TESTCheck)
+```
+
+PCA needed `r preProc$numComp` components to capture `r preProc$thresh*100` % of the variance. Additionally PCA automatically standardized the variables. In the end of the preprocessing procedure I have 4 data sets:
+
+* trainPC - training set principle components
+* testPC - test set principle components
+* valPC - validation set principle components
+* TESTCheckPC - principle components for the prediction of 20 cases
+
+## Prediction
+
+Below I am testing the performance of several methods. I train the data on the train set and test it on the test set. In all of the methods I use **k-fold cross validation**. Since the number of observations is very large I would ideally want to use a big number for k, because it will reduce the variance, whilst not affecting the bias too much because the sample size is large. Increasing k, however also increases computation time and memory demands. For k I can therefore use maximum of about 25, otherwise I run out of memory. For the training to be done in about 20 min I therefore use k=15. This should give a fairly representative in sample error rate.
+
+
+```{r training,}
+num <- 15
+ctrl <- trainControl(method = "cv", number = num)
+
+set.seed(111)
+modFitLDA = train(classe~ ., method="lda", trControl = ctrl, data=trainPC) 
+modFitDT = train(classe~ ., method="rpart", trControl = ctrl, data=trainPC) 
+modFitBOOST <- train(classe~ ., method="gbm", trControl = ctrl, verbose=FALSE,data=trainPC)
+modFitRF <- train(classe ~ .,method="rf", trControl = ctrl, data=trainPC)
+
+AccuracyLDA <- confusionMatrix(testPC$classe,predict(modFitLDA,testPC))[[3]][[1]]
+AccuracyDT <- confusionMatrix(testPC$classe,predict(modFitDT,testPC))[[3]][[1]]
+AccuracyBOOST <- confusionMatrix(testPC$classe,predict(modFitBOOST,testPC))[[3]][[1]]
+AccuracyRF <- confusionMatrix(testPC$classe,predict(modFitRF,testPC))[[3]][[1]]
+```
+
+
+
+```{r}
+cbind(RF = AccuracyRF, BOOST = AccuracyBOOST, LDA = AccuracyLDA, DT = AccuracyDT)
+```
+
+From the output above I see that random forest gives the best prediction, followed by boosting, linear discriminative analysis and decision trees.
+
+### Combining predictions
+
+To further improve the prediction I am combining all the predictions on the test set. I am using boosting for the method to combine the predictions as it is faster and actually more accurate than random forest (have tried it out). Since the number of variables is only 4, I can afford to increase k to 40 in cross validation.
+
+```{r comining predictions, warning=FALSE}
+predTEST <- data.frame(
+            RF = predict(modFitRF,testPC), BOOST = predict(modFitBOOST,testPC), 
+            DT = predict(modFitDT,testPC), LDA = predict(modFitLDA,testPC), classe=testPC$classe)
+
+num <- 40
+ctrlF <- trainControl(method = "cv", number = num)
+combModFit <- train(classe ~.,method="gbm", trControl = ctrlF, data=predTEST, verbose=FALSE)
+AccuracyComb<- confusionMatrix(predTEST$classe,predict(combModFit,predTEST))[[3]][[1]]
+```
+
+
+```{r}
+cbind(Combined = AccuracyComb, RF = AccuracyRF, BOOST = AccuracyBOOST, DT = AccuracyDT, LDA = AccuracyLDA)
+```
+
+By combining the predictors we actually have not improved the in sample accuracy for the random forest prediction. The in sample error is therefore about 3 %.
+
+### Out of sample error rate
+
+In order to estimate the out of sample error the combined model is tested on the validation set.
+
+```{r}
+predVAL <- data.frame(
+            RF = predict(modFitRF,valPC), BOOST = predict(modFitBOOST,valPC), 
+            DT = predict(modFitDT,valPC), LDA = predict(modFitLDA,valPC), classe=valPC$classe)
+confusionMatrix(predVAL$classe, predict(combModFit,predVAL))[[3]]
+```
+
+The validation set seems to also have a very similar out of sample error as the in sample error for the test set (of about 3%). This is because wehn the combining the predictors I actually have not imporved the model from random forset at all. In other words I have not fitted the data better in the test set. Therefore the test and validation sets give fairly similar predictions of the accuracy.
+
+## Prediction of the 20 test cases 
+
+Here I make the prediction of the 20 test cases.
+```{r include=FALSE}
+predict(modFitRF,TESTCheckPC)
+```
+
+```{r}
+predCheck <- data.frame(RF = predict(modFitRF,TESTCheckPC), BOOST = predict(modFitBOOST,TESTCheckPC), 
+                        DT = predict(modFitDT,TESTCheckPC), LDA = predict(modFitLDA,TESTCheckPC))
+predict(combModFit,predCheck)
+```
+
+
+
+## Feedback
+
+I would especially appreciate any feedback regarding:
+
+* generation of features 
+* optimization of the algorithm with respect to speed (computation time of about an hour-single core)
+* optimization of the algorithm with respect to accuracy (97% reached)
+
+For the last two points it is quite clear that playing with k in cross validation and the treshold for the principle component analysis will affect the speed and the accuracy, so you don't need to comment on these two points ;)
+
